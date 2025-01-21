@@ -30,8 +30,9 @@ class CanReceiverThread(threading.Thread):
         self.daemon = True
         self._running = True  # flag to control the running state
         self.can_bus = None
-        self.initial_interface_state = self.get_link_status(self.channel)
         self.can_initialised = threading.Event()
+        self._link_status_cache = {"timestamp": 0, "result": None}
+        self.initial_interface_state = self.get_link_status()
 
     @classmethod
     def get_instance(cls, channel, bustype) -> "CanReceiverThread":
@@ -66,7 +67,7 @@ class CanReceiverThread(threading.Thread):
         self.can_initialised.set()
 
         while self._running:
-            link_status = self.get_link_status(self.channel)
+            link_status = self.get_link_status()
             if link_status:
                 try:
                     message = self.can_bus.recv(timeout=1.0)  # wait for max 1 second to receive message
@@ -132,19 +133,27 @@ class CanReceiverThread(threading.Thread):
             # return a copy of the current cache
             return dict(self.message_cache)
 
-    @staticmethod
-    def get_link_status(channel: str) -> bool:
+    def get_link_status(self) -> bool:
         """
-        Check if the CAN interface is up
+        Check if the CAN interface is up. Cache the result for 1 second.
 
         :param channel: CAN interface name
         :return: True if interface is up, False otherwise
         """
-        result = subprocess.run(["ip", "link", "show", channel], capture_output=True, text=True, check=True)
-        if "UP" in result.stdout:
-            return True
-        else:
-            return False
+
+        current_time = time()
+        # Check if cached result is still valid
+        if self._link_status_cache["timestamp"] + 1 > current_time:
+            return self._link_status_cache["result"]
+
+        result = subprocess.run(["ip", "link", "show", self.channel], capture_output=True, text=True, check=True)
+        status = "UP" in result.stdout
+
+        # Update the cache
+        self._link_status_cache["timestamp"] = current_time
+        self._link_status_cache["result"] = status
+
+        return status
 
     @staticmethod
     def get_bitrate(channel: str) -> int:
