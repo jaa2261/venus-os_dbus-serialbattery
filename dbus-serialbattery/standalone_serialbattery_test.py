@@ -20,8 +20,10 @@ import logging
 # "" = default = "/dev/ttyUSB0"
 # if you have another device specify here
 # DEVPATH = "/dev/ttyAMA0"  # with Waveshare CAN/RS485 HAT
-DEVPATH = "/dev/ttyUSB0"
+# DEVPATH = "/dev/ttyUSB0"
+DEVPATH = "Renogy_Ble"
 USEDIDADR = 1
+DRIVEROPTION = 4 # Renogy BLE
 
 # Enter Loglevel 0,10,20,30,40,50
 # CRITICAL   50
@@ -71,7 +73,7 @@ if logtoconsole == 1:
     mylogs.addHandler(stream)
 
 
-sasb = standalone_serialbattery(DEVPATH, 0, "", LOGLEVEL)
+sasb = standalone_serialbattery(DEVPATH, DRIVEROPTION, "", LOGLEVEL)
 sasb.bms_open()
 sleep(0.5)
 time1 = datetime.datetime.now()

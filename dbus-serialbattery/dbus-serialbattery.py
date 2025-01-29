@@ -327,6 +327,10 @@ def main():
                 # noqa: F401 --> ignore flake "imported but unused" error
                 from bms.litime_ble import LiTime_Ble  # noqa: F401
 
+            if port == "Renogy_Ble":
+                # noqa: F401 --> ignore flake "imported but unused" error
+                from bms.renogy_ble import Renogy_Ble  # noqa: F401
+
             class_ = eval(port)
 
             # do not remove ble_ prefix, since the dbus service cannot be only numbers

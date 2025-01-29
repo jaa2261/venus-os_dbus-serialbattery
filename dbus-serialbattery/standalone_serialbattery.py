@@ -55,6 +55,7 @@
 # 1 : JKBMS bluettooth - Jkbms_Ble
 # 2 : JDB bluetooth    - LltJbd_Ble
 # 3 : LiTime bluetooth - LiTime_Ble
+# 4 : Renogy bluetooth - Renogy_Ble
 # 10: CAN devices for JKBAMS and DALY
 #
 # devadr
@@ -254,24 +255,24 @@ class standalone_serialbattery:
                     raise (None, None, 1)
 
     def bms_open(self):
-        logging.info("open serial interface")
         # check if BMS_TYPE is not empty and all BMS types in the list are supported
-        if len(BMS_TYPE) > 0:
-            for bms_type in BMS_TYPE:
-                if bms_type not in [bms["bms"].__name__ for bms in self.supported_bms_types]:
-                    logging.error(
-                        f'ERROR >>> BMS type "{bms_type}" is not supported. Supported BMS types are: '
-                        + f"{', '.join([bms['bms'].__name__ for bms in self.supported_bms_types])}"
-                        + "; Disabled by default: ANT, MNB, Sinowealth"
-                    )
-                    raise Exception("BMS DEVICE NOT IN SUPPORTED LIST")
+        # if len(BMS_TYPE) > 0:
+        #     for bms_type in BMS_TYPE:
+        #         if bms_type not in [bms["bms"].__name__ for bms in self.supported_bms_types]:
+        #             logging.error(
+        #                 f'ERROR >>> BMS type "{bms_type}" is not supported. Supported BMS types are: '
+        #                 + f"{', '.join([bms['bms'].__name__ for bms in self.supported_bms_types])}"
+        #                 + "; Disabled by default: ANT, MNB, Sinowealth"
+        #             )
+        #             raise Exception("BMS DEVICE NOT IN SUPPORTED LIST")
 
         if self.driveroption != 0:  # no autodetect for Bluetooth, CAN and serial
             """
             Import ble classes only, if it's a ble port, else the driver won't start due to missing python modules
             This prevent problems when using the driver only with a serial connection
             """
-            if self.driveroption <= 3:  # bluetooth
+            if self.driveroption <= 4:  # bluetooth
+                logging.info("open bluetooth interface")
 
                 if self.driveroption == 1:  # "Jkbms_Ble":
                     # noqa: F401 --> ignore flake "imported but unused" error
@@ -284,6 +285,10 @@ class standalone_serialbattery:
                 if self.driveroption == 3:  # "LiTime_Ble":
                     # noqa: F401 --> ignore flake "imported but unused" error
                     from bms.litime_ble import LiTime_Ble  # noqa: F401
+
+                if self.driveroption == 4:  # "Renogy_Ble":
+                    # noqa: F401 --> ignore flake "imported but unused" error
+                    from bms.renogy_ble import Renogy_Ble  # noqa: F401
 
                 class_ = eval(self.devpath)
                 testbms = class_("ble_" + self.devadr.replace(":", "").lower(), 9600, self.devadr)
@@ -303,6 +308,7 @@ class standalone_serialbattery:
                 """
                 from bms.daly_can import Daly_Can
                 from bms.jkbms_can import Jkbms_Can
+                logging.info("open CAN interface")
 
                 # only try CAN BMS on CAN port
                 self.supported_bms_types = [
@@ -360,8 +366,9 @@ class standalone_serialbattery:
 
         # SERIAL
         else:  # Serial, modbus, ...
+            logging.info("open serial interface")
             # check if BMS_TYPE is not empty and all BMS types in the list are supported
-            # self.check_bms_types(supported_bms_types, "serial")
+            self.check_bms_types(supported_bms_types, "serial")
 
             # wait some seconds to be sure that the serial connection is ready
             # else the error throw a lot of timeouts
