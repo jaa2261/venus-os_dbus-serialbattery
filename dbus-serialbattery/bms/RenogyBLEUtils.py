@@ -1,5 +1,5 @@
 # Reads data from a list of bytes, and converts to an int
-def bytes_to_int(bs, offset, length, signed=False, scale=1):
+def bytes_to_int(bs, offset, length, signed=False, scale=1, dp=2):
     ret = 0
     if len(bs) < (offset + length):
         return ret
@@ -11,7 +11,9 @@ def bytes_to_int(bs, offset, length, signed=False, scale=1):
         byteorder = "little"
         start = offset + length + 1
         end = offset + 1
-    return round(int.from_bytes(bs[start:end], byteorder=byteorder, signed=signed) * scale, 2)
+
+    val = int.from_bytes(bs[start:end], byteorder=byteorder, signed=signed) * scale
+    return round(val, dp)
 
 
 # Converts an integer into 2 bytes (16 bits)
@@ -35,9 +37,7 @@ def format_temperature(celcius, unit="F"):
 
 
 def filter_fields(data, fields_str):
-    fields = (
-        [x.strip() for x in fields_str.split(",")] if len(fields_str) > 0 else []
-    )  # trim spaces
+    fields = [x.strip() for x in fields_str.split(",")] if len(fields_str) > 0 else []  # trim spaces
     if len(fields) > 0 and set(fields).issubset(data):
         return {key: data[key] for key in fields}
     return data

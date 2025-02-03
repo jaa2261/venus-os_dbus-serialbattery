@@ -1,6 +1,6 @@
 import asyncio
 import configparser
-import logging
+from utils import logger
 import traceback
 from bms.RenogyBLEManager import RenogyBLEManager
 from bms.RenogyBLEUtils import bytes_to_int, crc16_modbus, int_to_bytes
@@ -18,21 +18,18 @@ READ_ERROR = 131
 
 
 class RenogyBLEBaseClient:
-    def __init__(self, config):
+    def __init__(self, config, device_id):
         self.config: configparser.ConfigParser = config
         self.ble_manager = None
         self.device = None
         self.poll_timer = None
         self.read_timeout = None
-        self.batteries = {}
         self.data = {}
-        self.devices = [device.strip() for device in self.config["device"]["device_list"].split(",")]
-        self.device_index = 0
-        self.device_id = self.devices[self.device_index]
+        self.device_id = device_id
         self.sections = []
         self.section_index = 0
         self.loop = None
-        logging.info(f"Init {self.__class__.__name__}: {self.config['device']['alias']} => " f"{self.config['device']['mac_addr']}")
+        logger.info(f"Init {self.__class__.__name__}: {self.config['device']['alias']} => " f"{self.config['device']['mac_addr']}")
 
     def start(self):
         try:
@@ -57,10 +54,10 @@ class RenogyBLEBaseClient:
         await self.ble_manager.discover()
 
         if not self.ble_manager.device:
-            logging.error(f"Device not found: {self.config['device']['alias']} => " f"{self.config['device']['mac_addr']}, please check the details provided.")
+            logger.error(f"Device not found: {self.config['device']['alias']} => " f"{self.config['device']['mac_addr']}, please check the details provided.")
             for dev in self.ble_manager.discovered_devices:
                 if dev.name is not None and dev.name.startswith(tuple(ALIAS_PREFIXES)):
-                    logging.info(f"Possible device found! ====> {dev.name} > [{dev.address}]")
+                    logger.info(f"Possible device found! ====> {dev.name} > [{dev.address}]")
             self.stop()
         else:
             await self.ble_manager.connect()
@@ -79,46 +76,34 @@ class RenogyBLEBaseClient:
         if operation == READ_SUCCESS or operation == READ_ERROR:
             if (
                 operation == READ_SUCCESS
-                and self.device_index < len(self.devices)
                 and self.section_index < len(self.sections)
                 and self.sections[self.section_index]["parser"] is not None
                 and self.sections[self.section_index]["words"] * 2 + 5 == len(response)
             ):
                 # call the parser and update data
-                logging.info("on_data_received: read operation success")
+                logger.info("on_data_received: read operation success")
                 self.__safe_parser(self.sections[self.section_index]["parser"], response)
             else:
-                logging.info(f"on_data_received: read operation failed: {response.hex()}")
+                logger.info(f"on_data_received: read operation failed: {response.hex()}")
 
             if self.section_index >= len(self.sections) - 1:  # last section, read complete
                 self.section_index = 0
-                self.batteries[self.device_id] = self.data
+                self.on_read_operation_complete()
                 self.data = {}
-                if self.device_index >= len(self.devices) - 1:
-                    self.device_index = 0
-                    self.on_read_operation_complete()
-                    self.data = {}
-                    await self.check_polling()
-                else:
-                    self.device_index += 1
-                    self.device_id = self.devices[self.device_index]
-                    await asyncio.sleep(0.5)
-                    await self.read_section()
+                await self.check_polling()
             else:
                 self.section_index += 1
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.1)  # delay was 0.5
                 await self.read_section()
         else:
-            logging.warning("on_data_received: unknown operation={}".format(operation))
+            logger.warning("on_data_received: unknown operation={}".format(operation))
 
     def on_read_operation_complete(self):
-        logging.info("on_read_operation_complete")
-        self.batteries["__device"] = self.config["device"]["alias"]
-        self.batteries["__client"] = self.__class__.__name__
-        self.__safe_callback(self.on_data_callback, self.batteries)
+        logger.info("on_read_operation_complete")
+        self.__safe_callback(self.on_data_callback, self.data)
 
     def on_read_timeout(self):
-        logging.error("on_read_timeout => Timed out! Please check your device_id!")
+        logger.error("on_read_timeout => Timed out! Please check your device_id!")
         self.stop()
 
     async def check_polling(self):
@@ -129,7 +114,7 @@ class RenogyBLEBaseClient:
     async def read_section(self):
         index = self.section_index
         if self.device_id is None or len(self.sections) == 0:
-            return logging.error("BaseClient cannot be used directly")
+            return logger.error("BaseClient cannot be used directly")
 
         self.read_timeout = self.loop.call_later(READ_TIMEOUT, self.on_read_timeout)
         request = self.create_generic_read_request(
@@ -154,16 +139,16 @@ class RenogyBLEBaseClient:
             crc = crc16_modbus(bytes(data))
             data.append(crc[0])
             data.append(crc[1])
-            logging.debug("{} {} => {}".format("create_request_payload", regAddr, data))
+            logger.debug("{} {} => {}".format("create_request_payload", regAddr, data))
         return data
 
     def __on_error(self, error=None):
-        logging.error(f"Exception occured: {error}")
+        logger.error(f"Exception occured: {error}")
         self.__safe_callback(self.on_error_callback, error)
         self.stop()
 
     def __on_connect_fail(self, error):
-        logging.error(f"Connection failed: {error}")
+        logger.error(f"Connection failed: {error}")
         self.__safe_callback(self.on_error_callback, error)
         self.stop()
 
@@ -177,7 +162,7 @@ class RenogyBLEBaseClient:
             try:
                 calback(self, param)
             except Exception as e:
-                logging.error(f"__safe_callback => exception in callback! {e}")
+                logger.error(f"__safe_callback => exception in callback! {e}")
                 traceback.print_exc()
 
     def __safe_parser(self, parser, param):
@@ -185,5 +170,5 @@ class RenogyBLEBaseClient:
             try:
                 parser(param)
             except Exception as e:
-                logging.error(f"exception in parser! {e}")
+                logger.error(f"exception in parser! {e}")
                 traceback.print_exc()

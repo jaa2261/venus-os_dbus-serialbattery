@@ -278,24 +278,43 @@ class standalone_serialbattery:
                     # noqa: F401 --> ignore flake "imported but unused" error
                     from bms.jkbms_ble import Jkbms_Ble  # noqa: F401
 
+                    batteryClass = Jkbms_Ble
+
                 if self.driveroption == 2:  # "LltJbd_Ble":
                     # noqa: F401 --> ignore flake "imported but unused" error
                     from bms.lltjbd_ble import LltJbd_Ble  # noqa: F401
+
+                    batteryClass = LltJbd_Ble
 
                 if self.driveroption == 3:  # "LiTime_Ble":
                     # noqa: F401 --> ignore flake "imported but unused" error
                     from bms.litime_ble import LiTime_Ble  # noqa: F401
 
+                    batteryClass = LiTime_Ble
+
                 if self.driveroption == 4:  # "Renogy_Ble":
                     # noqa: F401 --> ignore flake "imported but unused" error
                     from bms.renogy_ble import Renogy_Ble  # noqa: F401
 
-                class_ = eval(self.devpath)
-                testbms = class_("ble_" + self.devadr.replace(":", "").lower(), 9600, self.devadr)
+                    batteryClass = Renogy_Ble
 
-                if testbms.test_connection():
-                    logging.info("Connection established to " + testbms.__class__.__name__)
-                    self.battery[0] = testbms
+                battery: Battery = batteryClass(self.devpath, -1, self.devadr)
+                if battery.test_connection() and battery.validate_data():
+                    logging.info("-- Connection established to " + battery.__class__.__name__)
+
+                    # check if BATTERY_ADDRESSES is not empty
+                    if BATTERY_ADDRESSES:
+                        for address in BATTERY_ADDRESSES:
+                            battery.address = address
+                            battery.refresh_data()
+                            if battery.hardware_version is not None:
+                                self.battery[address] = battery
+                                logger.info(f"Successful battery connection at {self.devpath} and this address {address}")
+                            else:
+                                logger.warning(f"No battery connection at {self.devpath} and this address {address}")
+                    # use default address
+                    else:
+                        self.battery[0] = self.get_battery(self.devpath)
 
             if self.driveroption == 10:  # can interface
                 """
@@ -308,6 +327,7 @@ class standalone_serialbattery:
                 """
                 from bms.daly_can import Daly_Can
                 from bms.jkbms_can import Jkbms_Can
+
                 logging.info("open CAN interface")
 
                 # only try CAN BMS on CAN port

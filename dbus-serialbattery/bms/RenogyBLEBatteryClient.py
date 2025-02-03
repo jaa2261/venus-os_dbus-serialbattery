@@ -6,8 +6,8 @@ FUNCTION = {3: "READ", 6: "WRITE"}
 
 
 class RenogyBLEBatteryClient(RenogyBLEBaseClient):
-    def __init__(self, config, on_data_callback=None, on_error_callback=None):
-        super().__init__(config)
+    def __init__(self, config, device_id, on_data_callback=None, on_error_callback=None):
+        super().__init__(config, device_id)
         self.on_data_callback = on_data_callback
         self.on_error_callback = on_error_callback
         self.data = {}
@@ -69,8 +69,8 @@ class RenogyBLEBatteryClient(RenogyBLEBaseClient):
         data["function"] = FUNCTION.get(bytes_to_int(bs, 1, 1))
         data["current"] = bytes_to_int(bs, 3, 2, True, scale=0.01)
         data["voltage"] = bytes_to_int(bs, 5, 2, scale=0.1)
-        data["remaining_charge"] = bytes_to_int(bs, 7, 4, scale=0.001)
-        data["capacity"] = bytes_to_int(bs, 11, 4, scale=0.001)
+        data["remaining_charge"] = bytes_to_int(bs, 7, 4, scale=0.001, dp=3)
+        data["capacity"] = bytes_to_int(bs, 11, 4, scale=0.001, dp=3)
         self.data.update(data)
 
     def parse_limits_info(self, bs):
