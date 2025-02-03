@@ -14,6 +14,8 @@ ENV/
 env.bak/
 venv.bak/
 
+.vscode/launch.json
+
 # Custom for this repo
 .DS_Store
 dbus-serialbattery/config.ini

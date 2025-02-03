@@ -37,7 +37,7 @@ logger = logging.getLogger("SerialBattery")
 PATH_CONFIG_DEFAULT: str = "config.default.ini"
 PATH_CONFIG_USER: str = "config.ini"
 
-config = configparser.ConfigParser(inline_comment_prefixes=("#"))
+config = configparser.ConfigParser()
 path = Path(__file__).parents[0]
 default_config_file_path = str(path.joinpath(PATH_CONFIG_DEFAULT).absolute())
 custom_config_file_path = str(path.joinpath(PATH_CONFIG_USER).absolute())
