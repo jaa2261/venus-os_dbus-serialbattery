@@ -185,7 +185,7 @@ class BatteryTemplate(Battery):
         """
         # remaining capacity of the battery in ampere hours (float)
         # if not available, then it's calculated from the SOC and the capacity
-        self.capacity_remaining = VALUE_FROM_BMS
+        self.capacity_remain = VALUE_FROM_BMS
 
         # temperature sensor 2 in °C (float)
         temperature_2 = VALUE_FROM_BMS
