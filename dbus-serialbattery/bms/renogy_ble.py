@@ -18,7 +18,7 @@ from typing import Union, Optional
 from utils import logger
 from bleak import BleakClient, BleakScanner, BLEDevice
 from bleak.exc import BleakDBusError
-from bms.renogy import RenogyProtection, Renogy
+from bms.renogy import Renogy
 
 BLE_CHARACTERISTICS_TX_UUID = "0000ffd1-0000-1000-8000-00805f9b34fb"
 BLE_CHARACTERISTICS_RX_UUID = "0000fff1-0000-1000-8000-00805f9b34fb"
@@ -31,7 +31,6 @@ class Renogy_Ble(Renogy):
         super(Renogy_Ble, self).__init__(port, -1, address)
 
         self.address = address
-        self.protection = RenogyProtection()
         self.type = self.BATTERYTYPE
         self.main_thread = threading.current_thread()
         self.data: bytearray = bytearray()

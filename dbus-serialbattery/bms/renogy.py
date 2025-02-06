@@ -1,13 +1,18 @@
 # -*- coding: utf-8 -*-
+from typing import List
 
-from battery import Protection, Battery, Cell
+from battery import Battery, Cell
 from utils import bytearray_to_string, read_serial_data, unpack_from, logger
 from struct import unpack
 import struct
 import sys
 from enum import Enum
 
-FUNCTION = {3: "READ", 6: "WRITE", 131: "READ_ERROR", 134: "WRITE_ERROR"}
+
+class ProtectionCodes(Enum):
+    ALARM = 2
+    WARNING = 1
+    OK = 0
 
 
 class Function(Enum):
@@ -141,66 +146,20 @@ def crc16_modbus(data: bytes):
     return bytes([crc_high, crc_low])
 
 
-# Reads data from a list of bytes, and converts to an int
-def bytes_to_int(bs, offset, length, signed=False, scale=1):
-    ret = 0
-    if len(bs) < (offset + length):
-        return ret
-    if length > 0:
-        byteorder = "big"
-        start = offset
-        end = offset + length
-    else:
-        byteorder = "little"
-        start = offset + length + 1
-        end = offset + 1
-    return round(int.from_bytes(bs[start:end], byteorder=byteorder, signed=signed) * scale, 2)
-
-
-# Converts an integer into 2 bytes (16 bits)
-# Returns either the first or second byte as an int
-def int_to_bytes(i, pos=0):
-    if pos == 0:
-        return int(format(i, "016b")[:8], 2)
-    if pos == 1:
-        return int(format(i, "016b")[8:], 2)
-    return 0
-
-
-class RenogyProtection(Protection):
-    def __init__(self):
-        super(RenogyProtection, self).__init__()
-        self.voltage_cell_high = False
-        self.voltage_cell_low = False
-        self.short = False
-        self.IC_inspection = False
-        self.software_lock = False
-
-    def set_voltage_cell_high(self, value):
-        self.voltage_cell_high = value
-        self.cell_imbalance = 2 if self.voltage_cell_low or self.voltage_cell_high else 0
-
-    def set_voltage_cell_low(self, value):
-        self.voltage_cell_low = value
-        self.cell_imbalance = 2 if self.voltage_cell_low or self.voltage_cell_high else 0
-
-    def set_short(self, value):
-        self.short = value
-        self.set_cell_imbalance(2 if self.short or self.IC_inspection or self.software_lock else 0)
-
-    def set_ic_inspection(self, value):
-        self.IC_inspection = value
-        self.set_cell_imbalance(2 if self.short or self.IC_inspection or self.software_lock else 0)
-
-    def set_software_lock(self, value):
-        self.software_lock = value
-        self.set_cell_imbalance(2 if self.short or self.IC_inspection or self.software_lock else 0)
+class RenogyCell(Cell):
+    def __init__(self, balance: bool = None):
+        super(RenogyCell, self).__init__(balance)
+        self.temperature: float = None
+        self.voltage_alarm = Alarm.NONE
+        self.temperature_alarm = Alarm.NONE
 
 
 class Renogy(Battery):
     def __init__(self, port, baud, address):
         super(Renogy, self).__init__(port, baud, address)
         self.type = self.BATTERYTYPE
+        self.cells: List[RenogyCell] = []
+        self.battery_data = {}
 
         # The RBT100LFP12SH-G1 uses 0xF7, another battery uses 0x30
         self.address = address
@@ -222,7 +181,7 @@ class Renogy(Battery):
     command_cycles = b"\x13\xB8\x00\x01"  # Registers 5048
     command_charge_limits = b"\x13\xB9\x00\x04"  # Registers 5049-5052
     command_cell_alarm_info = b"\x13\xEC\x00\x04"  # Registers 5100-5103
-    command_other_alarm_info = b"\x13\xFC\x00\x02"  # Registers 5104-5105
+    command_other_alarm_info = b"\x13\xF0\x00\x02"  # Registers 5104-5105
     command_status_info = b"\x13\xF2\x00\x04"  # Registers 5106-5109
     # Battery info
     command_serial_number = b"\x13\xF6\x00\x08"  # Registers 5110-5117 (8 byte string)
@@ -232,7 +191,7 @@ class Renogy(Battery):
     command_manufacturer = b"\x14\x0C\x00\x0A"  # Registers 5132-5139 (10 byte string)
     # BMS warning and protection config
     command_limits = b"\x14\x50\x00\x16"  # Registers 5200-5221
-    command_device_id = b"\x14\x67\x00\x01"  # Registers 5200-5221
+    command_device_id = b"\x14\x67\x00\x01"  # Registers 5223
 
     def unique_identifier(self) -> str:
         """
@@ -255,7 +214,6 @@ class Renogy(Battery):
             result = self.get_settings()
             # get the rest of the data to be sure, that all data is valid and the correct battery type is recognized
             # only read next data if the first one was successful, this saves time when checking multiple battery types
-            result = result and self.read_gen_data()
             result = result and self.refresh_data()
         except Exception:
             (
@@ -271,82 +229,380 @@ class Renogy(Battery):
         return result
 
     def get_settings(self):
-        # After successful connection get_settings() will be called to set up the battery
-        # Set the current limits, populate cell count, etc
-        # Return True if success, False for failure
-        result = self.get_cell_count()
-        result = result and self.read_status_data()
-        result = result and self.read_gen_data()
-        result = result and self.read_bms_config()
+        """
+        After successful connection get_settings() will be called to set up the battery
+        Set all values that only need to be set once
+        Return True if success, False for failure
+        """
+        try:
+            result = self.get_cell_count()
 
-        if result:
-            self.charge_fet = self.status1.charge_MOSFET == State.ON
-            self.discharge_fet = self.status1.discharge_MOSFET == State.ON
-            # self.balance_fet = self.status1.balance_MOSFET == State.ON
+            # init the cell array once
+            if len(self.cells) == 0:
+                for _ in range(self.cell_count):
+                    self.cells.append(RenogyCell(False))
+
+            result = result and self.read_gen_data()
+            result = result and self.read_bms_config()
+
+            # MANDATORY values to set
+            # does not need to be in this function, but has to be set at least once
+            # could also be read in a function that is called from refresh_data()
+            #
+            # if not available from battery, then add a section in the `config.default.ini`
+            # under ; --------- BMS specific settings ---------
+            if result:
+                # number of connected cells (int)
+                self.cell_count = self.battery_data["cell_count"]
+
+                # capacity of the battery in ampere hours (float)
+                self.capacity = self.battery_data["capacity"]
+
+                # OPTIONAL values to set
+                # does not need to be in this function
+                # could also be read in a function that is called from refresh_data()
+
+                # maximum charge current in amps (float)
+                self.max_battery_charge_current = self.battery_data["charge_current_limit"]
+
+                # maximum discharge current in amps (float)
+                self.max_battery_discharge_current = self.battery_data["discharge_current_limit"]
+
+                # custom field, that the user can set in the BMS software (str)
+                self.custom_field = self.battery_data["device_id"]
+
+                # maximum voltage of the battery in V (float)
+                self.max_battery_voltage_bms = self.battery_data["charge_voltage_limit"]
+
+                # minimum voltage of the battery in V (float)
+                self.min_battery_voltage_bms = self.battery_data["discharge_voltage_limit"]
+
+                # hardware version of the BMS (str)
+                self.hardware_version = f"{self.battery_data["manufacturer_name"]} {self.battery_data["battery_name"]}"
+
+                # serial number of the battery (str)
+                self.serial_number = self.battery_data["serial_number"]
+
+        except Exception:
+            exception_type, exception_object, exception_traceback = sys.exc_info()
+            file = exception_traceback.tb_frame.f_code.co_filename
+            line = exception_traceback.tb_lineno
+            logger.error(f"Exception occurred: {repr(exception_object)} of type {exception_type} in {file} line #{line}")
+            result = False
 
         return result
 
     def refresh_data(self):
-        # call all functions that will refresh the battery data.
-        # This will be called for every iteration (1 second)
-        # Return True if success, False for failure
-        result = self.read_soc_data()
-        result = result and self.read_cell_data()
-        result = result and self.read_temperature_data()
-        result = result and self.read_status_data()
-        result = result and self.read_alarm_data
+        """
+        call all functions that will refresh the battery data.
+        This will be called for every iteration (1 second)
+        Return True if success, False for failure
+        """
+        try:
+            result = self.read_status_data()
+        except Exception:
+            exception_type, exception_object, exception_traceback = sys.exc_info()
+            file = exception_traceback.tb_frame.f_code.co_filename
+            line = exception_traceback.tb_lineno
+            logger.error(f"Exception occurred: {repr(exception_object)} of type {exception_type} in {file} line #{line}")
+            result = False
 
         return result
 
+    def read_status_data(self):
+        # read the status data
+        try:
+            result = self.read_soc_data()
+            result = result and self.read_cell_data()
+            result = result and self.read_temperature_data()
+            result = result and self.read_alarm_data()
+            result = result and self.read_protection_data()
+
+            if result:
+
+                for i in range(0, self.cell_count):
+                    self.cells[i].voltage = self.battery_data[f"cell_voltage_{i}"]
+                    self.cells[i].temperature = self.battery_data[f"cell_temp_{i}"]
+                    self.cells[i].voltage_alarm = self.battery_data[f"cell_voltage_alarm_{i}"]
+                    self.cells[i].voltage_alarm = self.battery_data[f"cell_temperature_alarm_{i}"]
+
+                # voltage of the battery in volts (float)
+                self.voltage = self.battery_data["voltage"]
+
+                # current of the battery in amps (float)
+                self.current = self.battery_data["current"]
+
+                # remaining capacity of the battery in ampere hours (float)
+                # if not available, then it's calculated from the SOC and the capacity
+                self.capacity_remain = self.battery_data["remaining_charge"]
+
+                # state of charge in percent (float)
+                self.soc = (self.capacity_remain / self.capacity) * 100
+
+                # status of the battery if charging is enabled (bool)
+                self.charge_fet = self.battery_data["charge_MOSFET"] == State.ON
+
+                # status of the battery if discharging is enabled (bool)
+                self.discharge_fet = self.battery_data["discharge_MOSFET"] == State.ON
+
+                # OPTIONAL values to set
+                if self.battery_data["environment_temperature_count"] > 0:
+                    # temperature sensor 1 in °C (float)
+                    temperature_1 = self.battery_data["environment_temperature_1"] / 10.0
+                    self.to_temperature(1, temperature_1)
+                    if self.battery_data["environment_temperature_count"] == 2:
+                        # temperature sensor 2 in °C (float)
+                        temperature_2 = self.battery_data["environment_temperature_2"] / 10.0
+                        self.to_temperature(2, temperature_2)
+
+                if self.battery_data["heater_temperature_count"] > 0:
+                    # temperature sensor 3 in °C (float)
+                    temperature_3 = self.battery_data["heater_temperature_1"] / 10.0
+                    self.to_temperature(3, temperature_3)
+                    if self.battery_data["heater_temperature_count"] == 2:
+                        temperature_4 = self.battery_data["heater_temperature_2"] / 10.0
+                        self.to_temperature(4, temperature_4)
+
+                # temperature sensor MOSFET in °C (float)
+                temperature_mos = self.battery_data["bms_board_temp"]
+                self.to_temperature(0, temperature_mos)
+
+                if self.battery_data["environment_temperature_count"] == 0:
+                    self.get_cell_count()
+
+                    tempSum = 0
+                    for i in range(0, self.cell_count):
+                        tempSum += self.cells[i].temperature
+
+                    temperature_1 = tempSum / self.cell_count
+                    self.to_temperature(1, temperature_1)
+
+                    if temperature_mos == 0:
+                        self.to_temperature(0, temperature_1)
+
+                # PROTECTION values
+                # 2 = alarm, 1 = warningm 0 = ok
+                # high battery voltage alarm (int)
+                if self.battery_data["module_over_voltage"] == ProtectionState.TRIGGER:
+                    self.protection.high_voltage = ProtectionCodes.ALARM
+                else:
+                    self.protection.high_voltage = ProtectionCodes.OK
+
+                # low battery voltage alarm (int)
+                if self.battery_data["module_under_voltage"] == ProtectionState.TRIGGER:
+                    self.protection.low_voltage = ProtectionCodes.ALARM
+                else:
+                    self.protection.low_voltage = ProtectionCodes.OK
+
+                # high cell voltage alarm (int)
+                cell_high_voltage_alarm = False
+                cell_low_voltage_alarm = False
+                cell_high_temp_alarm = False
+                cell_low_temp_alarm = False
+                for i in range(0, self.cell_count - 1):
+                    if self.cells[i].voltage_alarm == Alarm.ABOVE:
+                        cell_high_voltage_alarm = True
+                    if self.cells[i].voltage_alarm == Alarm.BELOW:
+                        cell_low_voltage_alarm = True
+                    if self.cells[i].temperature_alarm == Alarm.ABOVE:
+                        cell_high_temp_alarm = True
+                    if self.cells[i].temperature_alarm == Alarm.BELOW:
+                        cell_low_temp_alarm = True
+
+                if self.battery_data["cell_over_voltage"] == ProtectionState.TRIGGER or cell_high_voltage_alarm:
+                    self.protection.high_cell_voltage = ProtectionCodes.ALARM
+                else:
+                    self.protection.high_cell_voltage = ProtectionCodes.OK
+
+                # low cell voltage alarm (int)
+                if self.battery_data["cell_under_voltage"] == ProtectionState.TRIGGER or cell_low_voltage_alarm:
+                    self.protection.low_cell_voltage = ProtectionCodes.ALARM
+                else:
+                    self.protection.low_cell_voltage = ProtectionCodes.OK
+
+                # low SOC alarm (int)
+                # NB Pure guess about if this is correct
+                if self.battery_data["charge_immediately_1"] == ChargeRequest.YES or self.battery_data["charge_immediately_2"] == ChargeRequest.YES:
+                    self.protection.low_soc = ProtectionCodes.ALARM
+                else:
+                    self.protection.low_soc = ProtectionCodes.OK
+
+                # high charge current alarm (int)
+                # There are 3 limits: config_charge_over_current_limit, config_charge_over2_current_limit,
+                # and config_charge_high_current_limit - not obvious how these relate to these alarms being triggered
+                # Possibly charge_over_current_1 gets triggered if current > config_charge_over_current_limit
+                # and charge_over_current_2 gets triggered if current > config_charge_over2_current_limit
+                # and charge_current_alarm gets triggered if current > config_charge_high_current_limit
+                # Maybe if current > config_charge_over_current_limit then you treat that as a warning,
+                # and if current > config_charge_over2_current_limit then you treat that as an alarm
+                # To be safe I'll assume if any are flagged it's an alarm
+                if (
+                    self.battery_data["charge_over_current_1"] == ProtectionState.NORMAL
+                    or self.battery_data["charge_over_current_2"] == ProtectionState.NORMAL
+                    or self.battery_data["charge_current_alarm"] == Alarm.NONE
+                ):
+                    self.protection.high_charge_current = ProtectionCodes.OK
+                if (
+                    self.battery_data["charge_over_current_1"] == ProtectionState.TRIGGER
+                    or self.battery_data["charge_over_current_2"] == ProtectionState.TRIGGER
+                    or self.battery_data["charge_current_alarm"] == Alarm.ABOVE
+                ):
+                    self.protection.high_charge_current = ProtectionCodes.ALARM
+
+                # high discharge current alarm (int)
+                # There are 3 limits: config_discharge_over_current_limit, config_discharge_over2_current_limit,
+                # and config_discharge_high_current_limit - not obvious how these relate to these alarms being triggered
+                # Possibly discharge_over_current_1 gets triggered if current < config_discharge_over_current_limit
+                # and discharge_over_current_2 gets triggered if current < config_discharge_over2_current_limit
+                # and discharge_current_alarm gets triggered if current < config_discharge_high_current_limit
+                # Maybe if current < config_discharge_over_current_limit then you treat that as a warning,
+                # and if current < config_discharge_over2_current_limit then you treat that as an alarm
+                # To be safe I'll assume if any are flagged it's an alarm
+                if (
+                    self.battery_data["discharge_over_current_1"] == ProtectionState.NORMAL
+                    or self.battery_data["discharge_over_current_2"] == ProtectionState.NORMAL
+                    or self.battery_data["discharge_current_alarm"] == Alarm.NONE
+                ):
+                    self.protection.high_discharge_current = ProtectionCodes.OK
+
+                if (
+                    self.battery_data["discharge_over_current_1"] == ProtectionState.TRIGGER
+                    or self.battery_data["discharge_over_current_2"] == ProtectionState.TRIGGER
+                    or self.battery_data["discharge_current_alarm"] == Alarm.ABOVE
+                ):
+                    self.protection.high_discharge_current = ProtectionCodes.ALARM
+
+                # cell imbalance alarm (int)
+                # self.protection.cell_imbalance = VALUE_FROM_BMS
+
+                # high charge temperature alarm (int)
+                if self.battery_data["charge_high_temp"] == WarningState.NORMAL and self.battery_data["charge_over_temp"] == ProtectionState.NORMAL:
+                    self.protection.high_charge_temperature = ProtectionCodes.OK
+                if self.battery_data["charge_high_temp"] == WarningState.TRIGGER:
+                    self.protection.high_charge_temperature = ProtectionCodes.WARNING
+                if self.battery_data["charge_over_temp"] == ProtectionState.TRIGGER or cell_high_temp_alarm:
+                    self.protection.high_charge_temperature = ProtectionCodes.ALARM
+
+                # low charge temperature alarm (int)
+                if self.battery_data["charge_low_temp"] == WarningState.NORMAL and self.battery_data["charge_under_temp"] == ProtectionState.NORMAL:
+                    self.protection.high_charge_temperature = ProtectionCodes.OK
+                if self.battery_data["charge_low_temp"] == WarningState.TRIGGER:
+                    self.protection.high_charge_temperature = ProtectionCodes.WARNING
+                if self.battery_data["charge_under_temp"] == ProtectionState.TRIGGER or cell_low_temp_alarm:
+                    self.protection.high_charge_temperature = ProtectionCodes.ALARM
+
+                # high temperature alarm (int)
+                if (
+                    self.battery_data["bms_board_temperature_alarm"] == Alarm.ABOVE
+                    or self.battery_data["environment_temperature_1_alarm"] == Alarm.ABOVE
+                    or self.battery_data["environment_temperature_2_alarm"] == Alarm.ABOVE
+                    or self.battery_data["heater_temperature_1_alarm"] == Alarm.ABOVE
+                    or self.battery_data["heater_temperature_2_alarm"] == Alarm.ABOVE
+                    or cell_high_temp_alarm
+                ):
+                    self.protection.high_temperature = ProtectionCodes.ALARM
+                    # high internal temperature alarm (int)
+                    self.protection.high_internal_temperature = ProtectionCodes.ALARM
+                else:
+                    self.protection.high_temperature = ProtectionCodes.OK
+
+                # low temperature alarm (int)
+                if (
+                    self.battery_data["bms_board_temperature_alarm"] == Alarm.BELOW
+                    or self.battery_data["environment_temperature_1_alarm"] == Alarm.BELOW
+                    or self.battery_data["environment_temperature_2_alarm"] == Alarm.BELOW
+                    or self.battery_data["heater_temperature_1_alarm"] == Alarm.BELOW
+                    or self.battery_data["heater_temperature_2_alarm"] == Alarm.BELOW
+                    or cell_low_temp_alarm
+                ):
+                    self.protection.low_temperature = ProtectionCodes.ALARM
+                else:
+                    self.protection.low_temperature = ProtectionCodes.OK
+
+                # fuse blown alarm (int)
+                if self.battery_data["short_circuit"] == ProtectionState.TRIGGER:
+                    self.protection.fuse_blown = ProtectionCodes.ALARM
+                    self.protection.internal_failure = ProtectionCodes.ALARM
+                else:
+                    self.protection.fuse_blown = ProtectionCodes.OK
+        except Exception:
+            exception_type, exception_object, exception_traceback = sys.exc_info()
+            file = exception_traceback.tb_frame.f_code.co_filename
+            line = exception_traceback.tb_lineno
+            logger.error(f"Exception occurred: {repr(exception_object)} of type {exception_type} in {file} line #{line}")
+            result = False
+
+        return result
+
+    def read_cell_data(self):
+        self.get_cell_count()
+
+        data = self.read_serial_data_renogy(self.command_cell_voltages)
+        if data is False:
+            return False
+
+        cell_volts = struct.unpack(">HHHHHHHHHHHHHHHH", data)
+
+        data = self.read_serial_data_renogy(self.command_cell_temperatures)
+        if data is False:
+            return False
+
+        cell_temps = struct.unpack(">hhhhhhhhhhhhhhhh", data)
+
+        for i in range(0, self.cell_count):
+            self.battery_data[f"cell_voltage_{i}"] = cell_volts[i] / 10.0
+            self.battery_data[f"cell_temp_{i}"] = cell_temps[i] / 10.0
+
+        return True
+
     def get_cell_count(self):
         if self.cell_count is None:
-            cc = self.read_serial_data_renogy(self.command_cell_count)
-            if cc is False:
-                return False
+            data = self.read_serial_data_renogy(self.command_cell_count)
+            if data is False:
+                logger.warning("Failed to read cell count")
+                self.battery_data["cell_count"] = 0
             else:
-                self.cell_count = struct.unpack(">H", cc)[0]
+                self.battery_data["cell_count"] = struct.unpack(">H", data)[0]
+                self.cell_count = self.battery_data["cell_count"]
         return True
 
     def read_gen_data(self):
-        model = self.read_serial_data_renogy(self.command_model)
+        data = self.read_serial_data_renogy(self.command_model)
         # check if connection success
-        if model is False:
+        if data is False:
             return False
         # may contain null bytes that we don't want
-        model_num, _, _ = unpack("16s", model)[0].decode("utf-8").partition("\0")
+        self.battery_data["battery_name"], _, _ = unpack("16s", data)[0].decode("utf-8").partition("\0")
 
-        manufacturer = self.read_serial_data_renogy(self.command_manufacturer)
-        if manufacturer is False:
-            self.hardware_version = model_num
+        data = self.read_serial_data_renogy(self.command_manufacturer)
+        if data is False:
+            self.battery_data["manufacturer_name"] = self.battery_data["battery_name"]
         else:
             # may contain null bytes that we don't want
-            manufacturer, _, _ = unpack("20s", manufacturer)[0].decode("utf-8").partition("\0")
-            self.hardware_version = f"{manufacturer} {model_num}"
+            self.battery_data["manufacturer_name"], _, _ = unpack("20s", data)[0].decode("utf-8").partition("\0")
 
-        logger.info(self.hardware_version)
+        data = self.read_serial_data_renogy(self.command_firmware_version)
+        if data is False:
+            return False
 
-        self.get_cell_count()
-
-        for c in range(self.cell_count):
-            self.cells.append(Cell(False))
-
-        firmware = self.read_serial_data_renogy(self.command_firmware_version)
-        firmware_major, firmware_minor = unpack_from("2s2s", firmware)
+        firmware_major, firmware_minor = unpack_from("2s2s", data)
         firmware_major = firmware_major.decode("utf-8")
         firmware_minor = firmware_minor.decode("utf-8")
-        self.version = float(f"{firmware_major}.{firmware_minor}")
+        self.battery_data["software_version"] = float(f"{firmware_major}.{firmware_minor}")
 
-        capacity = self.read_serial_data_renogy(self.command_capacity)
-        if capacity is False:
+        data = self.read_serial_data_renogy(self.command_capacity)
+        if data is False:
             return False
-        self.capacity = unpack(">L", capacity)[0] / 1000.0
+        self.battery_data["capacity"] = unpack(">L", data)[0] / 1000.0
 
         try:
-            serial_number = self.read_serial_data_renogy(self.command_serial_number)
-            self.serial_number = unpack("16s", serial_number)[0].decode("utf-8")
+            data = self.read_serial_data_renogy(self.command_serial_number)
+            if data is False:
+                return False
+            self.battery_data["serial_number"] = unpack("16s", data)[0].decode("utf-8")
         except Exception:
-            logger.debug(f"serial number: {serial_number}")
-            self.serial_number = None
+            logger.debug(f"serial number: {data}")
+            self.battery_data["serial_number"] = None
             pass
 
         data = self.read_serial_data_renogy(self.command_charge_limits)
@@ -354,60 +610,47 @@ class Renogy(Battery):
             return False
 
         (charge_voltage_limit, discharge_voltage_limit, charge_current_limit, discharge_current_limit) = unpack(">HHHh", data)
-        self.max_battery_voltage_bms = charge_voltage_limit / 10.0
-        self.min_battery_voltage_bms = discharge_voltage_limit / 10.0
-        self.max_battery_current_bms = charge_current_limit / 100.0
-        self.max_battery_discharge_current = discharge_current_limit / 100.0
+        self.battery_data["charge_voltage_limit"] = charge_voltage_limit / 10.0
+        self.battery_data["discharge_voltage_limit"] = discharge_voltage_limit / 10.0
+        self.battery_data["charge_current_limit"] = charge_current_limit / 100.0
+        self.battery_data["discharge_current_limit"] = discharge_current_limit / 100.0
 
         data = self.read_serial_data_renogy(self.command_version_info)
         if data is False:
             return False
         (manufacture_version, version_major, version_minor, communication_protocol_version) = unpack(">2s2s2s2s", data)
 
-        self.manufacture_version = manufacture_version.decode("utf-8")
-        self.version_major = version_major.decode("utf-8")
-        self.version_minor = version_minor.decode("utf-8")
-        self.communication_protocol_version = communication_protocol_version.decode("utf-8")
-        self.main_line_version = float(f"{version_major}.{version_minor}")
-        self.version_info = f"{self.manufacture_version} {self.version_major} {self.version_minor} {self.communication_protocol_version}"
+        self.battery_data["manufacture_version"] = manufacture_version.decode("utf-8")
+        self.battery_data["version_major"] = version_major.decode("utf-8")
+        self.battery_data["version_minor"] = version_minor.decode("utf-8")
+        self.battery_data["communication_protocol_version"] = communication_protocol_version.decode("utf-8")
+        self.battery_data["main_line_version"] = float(f"{self.battery_data["version_major"]}.{self.battery_data["version_minor"]}")
+        self.battery_data["version_info"] = (
+            f"{self.battery_data["manufacture_version"]} {self.battery_data["main_line_version"]} {self.battery_data["communication_protocol_version"]}"
+        )
 
         data = self.read_serial_data_renogy(self.command_device_id)
         if data is False:
             return False
-        self.device_id = unpack(">H", data)
+        self.battery_data["device_id"] = unpack(">H", data)[0]
 
         return True
 
     def read_soc_data(self):
-        soc_data = self.read_serial_data_renogy(self.command_soc)
+        data = self.read_serial_data_renogy(self.command_soc)
         # check if connection success
-        if soc_data is False:
+        if data is False:
             return False
 
-        current, voltage, capacity_remain = unpack_from(">hhL", soc_data)
-        self.capacity_remain = capacity_remain / 1000.0
-        self.current = current / 100.0
-        self.voltage = voltage / 10.0
-        self.soc = (self.capacity_remain / self.capacity) * 100
-        return True
+        current, voltage, capacity_remain = unpack_from(">hhL", data)
 
-    def read_cell_data(self):
-        self.get_cell_count()
-        cell_volt_data = self.read_serial_data_renogy(self.command_cell_voltages)
-        cell_temperature_data = self.read_serial_data_renogy(self.command_cell_temperatures)
-        for c in range(self.cell_count):
-            try:
-                cell_volts = unpack_from(">H", cell_volt_data, c * 2)
-                cell_temperature = unpack_from(">H", cell_temperature_data, c * 2)
-                if len(cell_volts) != 0:
-                    self.cells[c].voltage = cell_volts[0] / 10
-                    self.cells[c].temperature = cell_temperature[0] / 10
-            except struct.error:
-                self.cells[c].voltage = 0
+        self.battery_data["remaining_charge"] = capacity_remain / 1000.0
+        self.battery_data["current"] = current / 100.0
+        self.battery_data["voltage"] = voltage / 10.0
+
         return True
 
     def read_temperature_data(self):
-
         data = self.read_serial_data_renogy(self.command_bms_temperatures)
         if data is False:
             return False
@@ -421,38 +664,13 @@ class Renogy(Battery):
             heater_temperature_2,
         ) = unpack(">HHHHHHH", data)
 
-        if environment_temperature_count > 0:
-            # temperature sensor 1 in °C (float)
-            temperature_1 = environment_temperature_1 / 10.0
-            self.to_temperature(1, temperature_1)
-            if environment_temperature_count == 2:
-                # temperature sensor 2 in °C (float)
-                temperature_2 = environment_temperature_2 / 10.0
-                self.to_temperature(2, temperature_2)
-
-        if heater_temperature_count > 0:
-            # temperature sensor 3 in °C (float)
-            temperature_3 = heater_temperature_1 / 10.0
-            self.to_temperature(3, temperature_3)
-            if heater_temperature_count == 2:
-                temperature_4 = heater_temperature_2 / 10.0
-                self.to_temperature(4, temperature_4)
-
-        temperature_mos = bms_board_temp
-        self.to_temperature(0, temperature_mos)
-
-        if environment_temperature_count == 0:
-            self.get_cell_count()
-
-            tempSum = 0
-            for i in range(0, self.cell_count):
-                tempSum += self.cells[i].temperature
-
-            temperature_1 = tempSum / self.cell_count
-            self.to_temperature(1, temperature_1)
-
-            if temperature_mos == 0:
-                self.to_temperature(0, temperature_1)
+        self.battery_data["bms_board_temp"] = bms_board_temp / 10.0
+        self.battery_data["environment_temperature_count"] = environment_temperature_count
+        self.battery_data["environment_temperature_1"] = environment_temperature_1 / 10.0
+        self.battery_data["environment_temperature_2"] = environment_temperature_2 / 10.0
+        self.battery_data["heater_temperature_count"] = heater_temperature_count
+        self.battery_data["heater_temperature_1"] = heater_temperature_1 / 10.0
+        self.battery_data["heater_temperature_2"] = heater_temperature_2 / 10.0
 
         return True
 
@@ -461,34 +679,35 @@ class Renogy(Battery):
         if data is False:
             return False
 
-        (cell_voltage_alarm, cell_temperature_alarm) = unpack(">II", data)
+        (self.battery_data["cell_voltage_alarm"], self.battery_data["cell_temperature_alarm"]) = unpack(">II", data)
         self.get_cell_count()
 
         for i in range(0, self.cell_count):
-            self.cells[i].voltage_alarm = Alarm[(cell_voltage_alarm >> i * 2) & 3]
-            self.cells[i].temperature_alarm = Alarm[(cell_temperature_alarm >> i * 2) & 3]
+            self.battery_data[f"cell_voltage_alarm_{i}"] = Alarm((self.battery_data["cell_voltage_alarm"] >> i * 2) & 3)
+            self.battery_data[f"cell_temperature_alarm_{i}"] = Alarm((self.battery_data["cell_temperature_alarm"] >> i * 2) & 3)
 
         data = self.read_serial_data_renogy(self.command_other_alarm_info)
         if data is False:
             return False
 
-        other_alarm = unpack(">I", data)
-        self.other_alarm.discharge_current_alarm = Alarm[(other_alarm >> 18) & 3]
-        self.other_alarm.charge_current_alarm = Alarm[(other_alarm >> 20) & 3]
-        self.other_alarm.heater_temperature_2_alarm = Alarm[(other_alarm >> 22) & 3]
-        self.other_alarm.heater_temperature_1_alarm = Alarm[(other_alarm >> 24) & 3]
-        self.other_alarm.environment_temperature_2_alarm = Alarm[(other_alarm >> 26) & 3]
-        self.other_alarm.environment_temperature_1_alarm = Alarm[(other_alarm >> 28) & 3]
-        self.other_alarm.bms_board_temperature_alarm = Alarm[(other_alarm >> 30) & 3]
+        other_alarm = unpack(">I", data)[0]
+        self.battery_data["other_alarm"] = other_alarm
+        self.battery_data["discharge_current_alarm"] = Alarm((other_alarm >> 18) & 3)
+        self.battery_data["charge_current_alarm"] = Alarm((other_alarm >> 20) & 3)
+        self.battery_data["heater_temperature_2_alarm"] = Alarm((other_alarm >> 22) & 3)
+        self.battery_data["heater_temperature_1_alarm"] = Alarm((other_alarm >> 24) & 3)
+        self.battery_data["environment_temperature_2_alarm"] = Alarm((other_alarm >> 26) & 3)
+        self.battery_data["environment_temperature_1_alarm"] = Alarm((other_alarm >> 28) & 3)
+        self.battery_data["bms_board_temperature_alarm"] = Alarm((other_alarm >> 30) & 3)
 
         return True
 
-    def read_status_data(self):
+    def read_protection_data(self):
         data = self.read_serial_data_renogy(self.command_cycles)
         if data is False:
             return False
 
-        self.history.charge_cycles = unpack(">H", data)[0]
+        self.battery_data["cycle_count"] = unpack(">H", data)[0]
 
         data = self.read_serial_data_renogy(self.command_status_info)
         if data is False:
@@ -497,50 +716,53 @@ class Renogy(Battery):
         (status1, status2, status3, chargeStatus) = unpack(">HHHH", data)
 
         # Status 1 values
-        self.status1.short_circuit = ProtectionState[(status1 >> 0) & 1]
-        self.status1.charge_MOSFET = State[(status1 >> 1) & 1]
-        self.status1.discharge_MOSFET = State[(status1 >> 2) & 1]
-        self.status1.using_battery_module_power = UsingState[(status1 >> 3) & 1]
-        self.status1.charge_over_current_2 = ProtectionState[(status1 >> 4) & 1]
-        self.status1.discharge_over_current_2 = ProtectionState[(status1 >> 5) & 1]
-        self.status1.module_over_voltage = ProtectionState[(status1 >> 6) & 1]
-        self.status1.cell_under_voltage = ProtectionState[(status1 >> 7) & 1]
-        self.status1.cell_over_voltage = ProtectionState[(status1 >> 8) & 1]
-        self.status1.charge_over_current_1 = ProtectionState[(status1 >> 9) & 1]
-        self.status1.discharge_over_current_1 = ProtectionState[(status1 >> 10) & 1]
-        self.status1.discharge_under_temp = ProtectionState[(status1 >> 11) & 1]
-        self.status1.discharge_over_temp = ProtectionState[(status1 >> 12) & 1]
-        self.status1.charge_under_temp = ProtectionState[(status1 >> 13) & 1]
-        self.status1.charge_over_temp = ProtectionState[(status1 >> 14) & 1]
-        self.status1.module_under_voltage = ProtectionState[(status1 >> 15) & 1]
+        self.battery_data["status1"] = status1
+        self.battery_data["short_circuit"] = ProtectionState((status1 >> 0) & 1)
+        self.battery_data["charge_MOSFET"] = State((status1 >> 1) & 1)
+        self.battery_data["discharge_MOSFET"] = State((status1 >> 2) & 1)
+        self.battery_data["using_battery_module_power"] = UsingState((status1 >> 3) & 1)
+        self.battery_data["charge_over_current_2"] = ProtectionState((status1 >> 4) & 1)
+        self.battery_data["discharge_over_current_2"] = ProtectionState((status1 >> 5) & 1)
+        self.battery_data["module_over_voltage"] = ProtectionState((status1 >> 6) & 1)
+        self.battery_data["cell_under_voltage"] = ProtectionState((status1 >> 7) & 1)
+        self.battery_data["cell_over_voltage"] = ProtectionState((status1 >> 8) & 1)
+        self.battery_data["charge_over_current_1"] = ProtectionState((status1 >> 9) & 1)
+        self.battery_data["discharge_over_current_1"] = ProtectionState((status1 >> 10) & 1)
+        self.battery_data["discharge_under_temp"] = ProtectionState((status1 >> 11) & 1)
+        self.battery_data["discharge_over_temp"] = ProtectionState((status1 >> 12) & 1)
+        self.battery_data["charge_under_temp"] = ProtectionState((status1 >> 13) & 1)
+        self.battery_data["charge_over_temp"] = ProtectionState((status1 >> 14) & 1)
+        self.battery_data["module_under_voltage"] = ProtectionState((status1 >> 15) & 1)
 
         # Status 2 values
-        self.status2.cell_low_voltage = WarningState[(status2 >> 0) & 1]
-        self.status2.cell_high_voltage = WarningState[(status2 >> 1) & 1]
-        self.status2.module_low_voltage = WarningState[(status2 >> 2) & 1]
-        self.status2.module_high_voltage = WarningState[(status2 >> 3) & 1]
-        self.status2.charge_low_temp = WarningState[(status2 >> 4) & 1]
-        self.status2.charge_high_temp = WarningState[(status2 >> 5) & 1]
-        self.status2.discharge_low_temp = WarningState[(status2 >> 6) & 1]
-        self.status2.discharge_high_temp = WarningState[(status2 >> 7) & 1]
-        self.status2.buzzer = State[(status2 >> 8) & 1]
-        self.status2.fully_charged = ChargedState[(status2 >> 11) & 1]
-        self.status2.heater_on = State[(status2 >> 13) & 1]
-        self.status2.effective_discharge_current = EffectiveState[(status2 >> 14) & 1]
-        self.status2.effective_charge_current = EffectiveState[(status2 >> 15) & 1]
+        self.battery_data["status2"] = status2
+        self.battery_data["cell_low_voltage"] = WarningState((status2 >> 0) & 1)
+        self.battery_data["cell_high_voltage"] = WarningState((status2 >> 1) & 1)
+        self.battery_data["module_low_voltage"] = WarningState((status2 >> 2) & 1)
+        self.battery_data["module_high_voltage"] = WarningState((status2 >> 3) & 1)
+        self.battery_data["charge_low_temp"] = WarningState((status2 >> 4) & 1)
+        self.battery_data["charge_high_temp"] = WarningState((status2 >> 5) & 1)
+        self.battery_data["discharge_low_temp"] = WarningState((status2 >> 6) & 1)
+        self.battery_data["discharge_high_temp"] = WarningState((status2 >> 7) & 1)
+        self.battery_data["buzzer"] = State((status2 >> 8) & 1)
+        self.battery_data["fully_charged"] = ChargedState((status2 >> 11) & 1)
+        self.battery_data["heater_on"] = State((status2 >> 13) & 1)
+        self.battery_data["effective_discharge_current"] = EffectiveState((status2 >> 14) & 1)
+        self.battery_data["effective_charge_current"] = EffectiveState((status2 >> 15) & 1)
 
         # Status 3 values
         self.get_cell_count()
-
+        self.battery_data["status3"] = status3
         for i in range(0, self.cell_count):
-            self.status.cell_voltage_state[i] = ErrorState[(status3 >> i) & 1]
+            self.battery_data[f"cell_voltage_error_state_{i}"] = ErrorState((status3 >> i) & 1)
 
         # Charge status
-        self.chargeStatus.full_charge_request = ChargeRequest[(chargeStatus >> 3) & 1]
-        self.chargeStatus.charge_immediately_1 = ChargeRequest[(chargeStatus >> 4) & 1]
-        self.chargeStatus.charge_immediately_2 = ChargeRequest[(chargeStatus >> 5) & 1]
-        self.chargeStatus.discharge_enable_request = DischargeEnableRequest[(chargeStatus >> 6) & 1]
-        self.chargeStatus.charge_enable_request = ChargeEnableRequest[(chargeStatus >> 7) & 1]
+        self.battery_data["chargeStatus"] = chargeStatus
+        self.battery_data["full_charge_request"] = ChargeRequest((chargeStatus >> 3) & 1)
+        self.battery_data["charge_immediately_1"] = ChargeRequest((chargeStatus >> 4) & 1)
+        self.battery_data["charge_immediately_2"] = ChargeRequest((chargeStatus >> 5) & 1)
+        self.battery_data["discharge_enable_request"] = DischargeEnableRequest((chargeStatus >> 6) & 1)
+        self.battery_data["charge_enable_request"] = ChargeEnableRequest((chargeStatus >> 7) & 1)
 
         return True
 
@@ -574,8 +796,28 @@ class Renogy(Battery):
             config_discharge_high_current_limit,
         ) = unpack(">HHHHHHhhHHHHHHHHHhhhhh", data)
 
-        self.max_battery_charge_current = config_charge_high_current_limit / 10.0
-        self.max_battery_discharge_current = config_discharge_high_current_limit / 100.0
+        self.battery_data["config_cell_over_voltage_limit"] = config_cell_over_voltage_limit / 10.0
+        self.battery_data["config_cell_high_voltage_limit"] = config_cell_high_voltage_limit / 10.0
+        self.battery_data["config_cell_low_voltage_limit"] = config_cell_low_voltage_limit / 10.0
+        self.battery_data["config_cell_under_voltage_limit"] = config_cell_under_voltage_limit / 10.0
+        self.battery_data["config_charge_over_temp_limit"] = config_charge_over_temp_limit / 10.0
+        self.battery_data["config_charge_high_temp_limit"] = config_charge_high_temp_limit / 10.0
+        self.battery_data["config_charge_low_temp_limit"] = config_charge_low_temp_limit / 10.0
+        self.battery_data["config_charge_under_temp_limit"] = config_charge_under_temp_limit / 10.0
+        self.battery_data["config_charge_over2_current_limit"] = config_charge_over2_current_limit / 100.0
+        self.battery_data["config_charge_over_current_limit"] = config_charge_over_current_limit / 100.0
+        self.battery_data["config_charge_high_current_limit"] = config_charge_high_current_limit / 100.0
+        self.battery_data["config_module_over_voltage_limit"] = config_module_over_voltage_limit / 10.0
+        self.battery_data["config_module_high_voltage_limit"] = config_module_high_voltage_limit / 10.0
+        self.battery_data["config_module_low_voltage_limit"] = config_module_low_voltage_limit / 10.0
+        self.battery_data["config_module_under_voltage_limit"] = config_module_under_voltage_limit / 10.0
+        self.battery_data["config_discharge_over_temp_limit"] = config_discharge_over_temp_limit / 10.0
+        self.battery_data["config_discharge_high_temp_limit"] = config_discharge_high_temp_limit / 10.0
+        self.battery_data["config_discharge_low_temp_limit"] = config_discharge_low_temp_limit / 10.0
+        self.battery_data["config_discharge_under_temp_limit"] = config_discharge_under_temp_limit / 10.0
+        self.battery_data["config_discharge_over2_current_limit"] = config_discharge_over2_current_limit / 100.0
+        self.battery_data["config_discharge_over_current_limit"] = config_discharge_over_current_limit / 100.0
+        self.battery_data["config_discharge_high_current_limit"] = config_discharge_high_current_limit / 100.0
         return True
 
     def generate_command(self, command):

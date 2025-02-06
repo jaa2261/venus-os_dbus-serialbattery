@@ -270,11 +270,6 @@ class Cell:
     The balance status of a specific cell
     """
 
-    temperature: float = None
-    """     
-    The temperature of a specific cell in Celsius
-    """
-
     def __init__(self, balance: bool = None):
         self.balance = balance
 
