@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 
 # Notes
-# Updated by https://github.com/idstein
+# This is a modified version of the Renogy driver to work with the Renogy BLE module
+# Borrowed heavily from the LltJbd_Ble driver
+# Updated by https://github.com/jaa2261
 
 import asyncio
 import atexit
@@ -16,13 +18,10 @@ from typing import Union, Optional
 from utils import logger
 from bleak import BleakClient, BleakScanner, BLEDevice
 from bleak.exc import BleakDBusError
-from bms.renogy import RenogyProtection, Renogy
+from bms.renogy import Renogy
 
 BLE_CHARACTERISTICS_TX_UUID = "0000ffd1-0000-1000-8000-00805f9b34fb"
 BLE_CHARACTERISTICS_RX_UUID = "0000fff1-0000-1000-8000-00805f9b34fb"
-
-MIN_RESPONSE_SIZE = 6
-MAX_RESPONSE_SIZE = 256
 
 
 class Renogy_Ble(Renogy):
@@ -32,7 +31,6 @@ class Renogy_Ble(Renogy):
         super(Renogy_Ble, self).__init__(port, -1, address)
 
         self.address = address
-        self.protection = RenogyProtection()
         self.type = self.BATTERYTYPE
         self.main_thread = threading.current_thread()
         self.data: bytearray = bytearray()
@@ -178,16 +176,6 @@ class Renogy_Ble(Renogy):
 
         return result
 
-    def unique_identifier(self) -> str:
-        """
-        Used to identify a BMS when multiple BMS are connected
-        If not provided by the BMS/driver then the hardware version and capacity is used,
-        since it can be changed by small amounts to make a battery unique.
-        On +/- 5 Ah you can identify 11 batteries
-        """
-        string = self.address.replace(":", "").lower()
-        return string
-
     async def send_command(self, command) -> Union[bytearray, bool]:
         if not self.bt_client:
             logger.error(">>> ERROR: No BLE client connection - returning")
@@ -252,10 +240,6 @@ class Renogy_Ble(Renogy):
             logger.error(">>> ERROR: No reply - canceled - returning")
             logger.error(e)
             return False
-        # except Exception as e:
-        #     logger.error(">>> ERROR: No reply - returning")
-        #     logger.error(e)
-        #     return False
         except Exception:
             exception_type, exception_object, exception_traceback = sys.exc_info()
             file = exception_traceback.tb_frame.f_code.co_filename
