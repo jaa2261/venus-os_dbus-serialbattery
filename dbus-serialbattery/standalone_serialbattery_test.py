@@ -84,7 +84,7 @@ for key_address in sasb.BatIds:
     ST = sasb.bms_read(key_address)
     print("Runtime: " + str((datetime.datetime.now() - time1).total_seconds()))
 
-    print("Battery ID: " + str(sasb.devadr))
+    print(f"Battery ID: {str(sasb.devpath)} {key_address}")
 
     i = 0
     print("Cellcount: " + str(sasb.cell_count))
