@@ -278,7 +278,7 @@ class Renogy(Battery):
                 self.min_battery_voltage_bms = self.battery_data["discharge_voltage_limit"]
 
                 # hardware version of the BMS (str)
-                self.hardware_version = f"{self.battery_data["manufacturer_name"]} {self.battery_data["battery_name"]}"
+                self.hardware_version = f"{self.battery_data['manufacturer_name']} {self.battery_data['battery_name']}"
 
                 # serial number of the battery (str)
                 self.serial_number = self.battery_data["serial_number"]
