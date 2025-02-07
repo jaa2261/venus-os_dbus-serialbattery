@@ -1,4 +1,4 @@
-name: "CodeChecks-jaa"
+name: "CodeChecks-jaa-1"
 
 on:
   push:
