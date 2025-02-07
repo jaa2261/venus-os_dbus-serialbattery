@@ -278,7 +278,7 @@ class Renogy(Battery):
                 self.min_battery_voltage_bms = self.battery_data["discharge_voltage_limit"]
 
                 # hardware version of the BMS (str)
-                self.hardware_version = f"{self.battery_data['manufacturer_name']} {self.battery_data['battery_name']}"
+                self.hardware_version = f"{self.battery_data["manufacturer_name"]} {self.battery_data['battery_name']}"  # noqa: E999
 
                 # serial number of the battery (str)
                 self.serial_number = self.battery_data["serial_number"]
@@ -624,14 +624,9 @@ class Renogy(Battery):
         self.battery_data["version_major"] = version_major.decode("utf-8")
         self.battery_data["version_minor"] = version_minor.decode("utf-8")
         self.battery_data["communication_protocol_version"] = communication_protocol_version.decode("utf-8")
-        self.battery_data["main_line_version"] = float(
-            f"{self.battery_data["version_major"]}. \
-                {self.battery_data["version_minor"]}"
-        )
+        self.battery_data["main_line_version"] = float(f"{self.battery_data["version_major"]}.{self.battery_data["version_minor"]}")  # noqa: E999
         self.battery_data["version_info"] = (
-            f"{self.battery_data["manufacture_version"]} \
-                {self.battery_data["main_line_version"]} \
-                    {self.battery_data["communication_protocol_version"]}"
+            f"{self.battery_data["manufacture_version"]} {self.battery_data["main_line_version"]} {self.battery_data["communication_protocol_version"]}"
         )
 
         data = self.read_serial_data_renogy(self.command_device_id)
