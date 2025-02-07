@@ -101,7 +101,6 @@ class Renogy_Ble(Renogy):
                     await asyncio.sleep(0.1)
             self.bt_loop = None
 
-        # Exception occurred: TimeoutError() of type <class 'asyncio.exceptions.TimeoutError'>
         except asyncio.exceptions.TimeoutError:
             exception_type, exception_object, exception_traceback = sys.exc_info()
             file = exception_traceback.tb_frame.f_code.co_filename
