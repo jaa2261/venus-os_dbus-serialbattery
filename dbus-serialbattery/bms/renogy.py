@@ -624,9 +624,14 @@ class Renogy(Battery):
         self.battery_data["version_major"] = version_major.decode("utf-8")
         self.battery_data["version_minor"] = version_minor.decode("utf-8")
         self.battery_data["communication_protocol_version"] = communication_protocol_version.decode("utf-8")
-        self.battery_data["main_line_version"] = float(f"{self.battery_data["version_major"]}.{self.battery_data["version_minor"]}")
+        self.battery_data["main_line_version"] = float(
+            f"{self.battery_data["version_major"]}. \
+                {self.battery_data["version_minor"]}"
+        )
         self.battery_data["version_info"] = (
-            f"{self.battery_data["manufacture_version"]} {self.battery_data["main_line_version"]} {self.battery_data["communication_protocol_version"]}"
+            f"{self.battery_data["manufacture_version"]} \
+                {self.battery_data["main_line_version"]} \
+                    {self.battery_data["communication_protocol_version"]}"
         )
 
         data = self.read_serial_data_renogy(self.command_device_id)
