@@ -1,6 +1,8 @@
 {
-    "[python]": { "editor.formatOnSave": true },
-
+    "[python]": {
+        "editor.defaultFormatter": "ms-python.black-formatter",
+        "editor.formatOnSave": true
+    },
     "python.autoComplete.extraPaths": [
         "dbus-serialbattery/ext",
         "dbus-serialbattery/ext/velib_python",
