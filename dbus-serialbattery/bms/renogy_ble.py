@@ -43,20 +43,20 @@ class Renogy_Ble(Renogy):
         self.ready_event: Optional[asyncio.Event] = None
 
         self.hci_uart_ok = True
-        if not os.path.isfile("/tmp/dbus-blebattery-hciattach"):
-            execpath = os.popen("ps -ww | grep hciattach | grep -v grep").read()
+        # if not os.path.isfile("/tmp/dbus-blebattery-hciattach"):
+        #     execpath = os.popen("ps -ww | grep hciattach | grep -v grep").read()
 
-            if execpath is not None:
-                execpath = re.search("/usr/bin/hciattach.+", execpath)
-                execfile = open("/tmp/dbus-blebattery-hciattach", "w")
-                execfile.write(execpath.group())
-                execfile.close()
-        else:
-            execpath = os.popen("ps -ww | grep hciattach | grep -v grep").read()
-            if not execpath:
-                execfile = open("/tmp/dbus-blebattery-hciattach", "r")
-                os.system(execfile.readline())
-                execfile.close()
+        #     if execpath is not None:
+        #         execpath = re.search("/usr/bin/hciattach.+", execpath)
+        #         execfile = open("/tmp/dbus-blebattery-hciattach", "w")
+        #         execfile.write(execpath.group())
+        #         execfile.close()
+        # else:
+        #     execpath = os.popen("ps -ww | grep hciattach | grep -v grep").read()
+        #     if not execpath:
+        #         execfile = open("/tmp/dbus-blebattery-hciattach", "r")
+        #         os.system(execfile.readline())
+        #         execfile.close()
 
         logger.info("Init of Renogy_Ble at " + address)
 
@@ -264,14 +264,14 @@ class Renogy_Ble(Renogy):
 
     def reset_hci_uart(self):
         logger.error("Reset of hci_uart stack... Reconnecting to: " + self.address)
-        self.run = False
-        os.system("pkill -f 'hciattach'")
-        sleep(0.5)
-        os.system("rmmod hci_uart")
-        os.system("rmmod btbcm")
-        os.system("modprobe hci_uart")
-        os.system("modprobe btbcm")
-        sys.exit(1)
+        # self.run = False
+        # os.system("pkill -f 'hciattach'")
+        # sleep(0.5)
+        # os.system("rmmod hci_uart")
+        # os.system("rmmod btbcm")
+        # os.system("modprobe hci_uart")
+        # os.system("modprobe btbcm")
+        # sys.exit(1)
         # execfile = open("/tmp/dbus-blebattery-hciattach", "r")
         # sleep(5)
         # os.system(execfile.readline())
