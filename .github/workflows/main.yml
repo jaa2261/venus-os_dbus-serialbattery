@@ -1,6 +1,7 @@
 name: "CodeChecks-jaa-1"
 
 on:
+  workflow_dispatch:
   push:
     # Run on all branches
     branches:
